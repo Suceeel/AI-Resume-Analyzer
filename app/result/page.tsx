@@ -1,7 +1,7 @@
 "use client";
 
-import { Suspense } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { ScoreCard } from "@/components/score-card";
 import { ResultSections } from "@/components/result-sections";
@@ -9,14 +9,37 @@ import { LoadingSkeleton } from "@/components/loading-skeleton";
 import { AnalysisResult } from "@/lib/analyzer";
 import { ArrowLeft, FileText } from "lucide-react";
 
-function ResultContent() {
-  const params = useSearchParams();
+export default function ResultPage() {
   const router = useRouter();
-  const raw = params.get("data");
+  const [data, setData] = useState<AnalysisResult | null>(null);
+  const [fallback, setFallback] = useState(false);
+  const [error, setError] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
-  if (!raw) {
+  useEffect(() => {
+    setMounted(true);
+    try {
+      const raw = sessionStorage.getItem("resumeResult");
+      const fb = sessionStorage.getItem("resumeFallback");
+      if (!raw) { setError(true); return; }
+      setData(JSON.parse(raw));
+      setFallback(fb === "1");
+    } catch {
+      setError(true);
+    }
+  }, []);
+
+  if (!mounted) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen gap-6 text-center px-4">
+      <div className="min-h-screen bg-[#080a0f] flex items-center justify-center">
+        <LoadingSkeleton />
+      </div>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen gap-6 text-center px-4 bg-[#080a0f]">
         <FileText className="w-12 h-12 text-white/20" />
         <p className="text-white/40">No analysis data found.</p>
         <button
@@ -24,32 +47,6 @@ function ResultContent() {
           className="px-6 py-3 rounded-xl bg-[#7c3aed] text-white text-sm font-medium hover:bg-[#6d28d9] transition-colors"
         >
           Analyze a Resume
-        </button>
-      </div>
-    );
-  }
-
-  let data: AnalysisResult;
-  try {
-    // Handle both single and double encoding
-    let decoded = raw;
-    try {
-      decoded = decodeURIComponent(raw);
-    } catch {
-      decoded = raw;
-    }
-    // If still looks encoded, decode again
-    if (decoded.startsWith("%7B") || decoded.startsWith("%7b")) {
-      decoded = decodeURIComponent(decoded);
-    }
-    data = JSON.parse(decoded);
-  } catch (e) {
-    console.error("Parse error:", e, "raw:", raw?.slice(0, 100));
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen gap-4 text-center px-4">
-        <p className="text-red-400">Failed to parse results. Please try again.</p>
-        <button onClick={() => router.push("/")} className="text-white/50 text-sm underline">
-          Go back
         </button>
       </div>
     );
@@ -74,6 +71,17 @@ function ResultContent() {
           <ArrowLeft className="w-4 h-4" />
           Analyze another resume
         </motion.button>
+
+        {fallback && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 flex items-center gap-2 text-yellow-400/80 text-xs bg-yellow-400/8 border border-yellow-400/20 rounded-xl px-4 py-2.5"
+          >
+            <span>⚡</span>
+            <span>Analyzed locally — AI service temporarily busy. Results are still accurate.</span>
+          </motion.div>
+        )}
 
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -111,17 +119,9 @@ function ResultContent() {
           transition={{ delay: 1 }}
           className="mt-8 text-center text-white/20 text-xs"
         >
-          Analysis powered by rule-based NLP · Results are indicative, not a guarantee
+          Analysis powered by Gemini AI + rule-based NLP · Results are indicative, not a guarantee
         </motion.div>
       </div>
     </main>
-  );
-}
-
-export default function ResultPage() {
-  return (
-    <Suspense fallback={<div className="min-h-screen bg-[#080a0f] flex items-center justify-center"><LoadingSkeleton /></div>}>
-      <ResultContent />
-    </Suspense>
   );
 }

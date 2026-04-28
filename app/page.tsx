@@ -27,8 +27,11 @@ export default function HomePage() {
         return;
       }
 
-      const encoded = encodeURIComponent(JSON.stringify(json.data));
-      router.push(`/result?data=${encoded}`);
+      // Store in sessionStorage to avoid URL length limits
+      sessionStorage.setItem("resumeResult", JSON.stringify(json.data));
+      sessionStorage.setItem("resumeFallback", json.data.fallback ? "1" : "0");
+
+      router.push("/result");
     } catch {
       setError("Network error. Please check your connection and try again.");
     } finally {
@@ -45,7 +48,8 @@ export default function HomePage() {
         <div
           className="absolute inset-0 opacity-[0.03]"
           style={{
-            backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.8) 1px, transparent 1px)",
+            backgroundImage:
+              "radial-gradient(circle, rgba(255,255,255,0.8) 1px, transparent 1px)",
             backgroundSize: "32px 32px",
           }}
         />
@@ -60,7 +64,7 @@ export default function HomePage() {
         >
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-[#7c3aed]/40 bg-[#7c3aed]/10 text-[#c4b5fd] text-xs font-semibold tracking-widest uppercase">
             <Sparkles className="w-3 h-3" />
-            AI-Powered by Claude
+            AI-Powered Resume Review
           </div>
 
           <h1 className="text-5xl sm:text-6xl font-black text-white leading-tight tracking-tight">
@@ -71,7 +75,8 @@ export default function HomePage() {
           </h1>
 
           <p className="text-white/50 text-lg max-w-md mx-auto leading-relaxed">
-            Get an instant AI score, discover your strengths, and unlock actionable improvements tailored to your resume.
+            Get an instant AI score, discover your strengths, and unlock
+            actionable improvements tailored to your resume.
           </p>
         </motion.div>
 
@@ -97,9 +102,12 @@ export default function HomePage() {
           {[
             { icon: Lock, label: "100% Private", sub: "Never stored" },
             { icon: Zap, label: "~10s Analysis", sub: "Powered by AI" },
-            { icon: Shield, label: "5/hr Limit", sub: "Fair use policy" },
+            { icon: Shield, label: "10/hr Limit", sub: "Fair use policy" },
           ].map(({ icon: Icon, label, sub }) => (
-            <div key={label} className="flex flex-col items-center gap-1.5 text-center">
+            <div
+              key={label}
+              className="flex flex-col items-center gap-1.5 text-center"
+            >
               <Icon className="w-4 h-4 text-white/30" />
               <p className="text-white/50 text-xs font-medium">{label}</p>
               <p className="text-white/25 text-xs">{sub}</p>

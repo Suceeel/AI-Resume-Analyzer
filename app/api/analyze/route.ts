@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractText } from "unpdf";
+import { analyzeResume } from "@/lib/analyzer";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -23,6 +24,13 @@ function checkRateLimit(request: NextRequest): { allowed: boolean; resetMins: nu
   entry.count += 1;
   return { allowed: true, resetMins: 0 };
 }
+
+// Free Gemini models in order of preference (most capable → most available)
+const FREE_MODELS = [
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-lite",
+  "gemini-1.5-flash-8b",
+];
 
 const ANALYSIS_PROMPT = (resumeText: string) =>
   `You are an expert resume reviewer. Analyze the resume below and return ONLY a JSON object. No markdown. No code fences. No explanation. Start with { and end with }.
@@ -51,53 +59,88 @@ JSON structure to return:
   "suggestions": [<exactly 4 strings>]
 }`;
 
+async function callGemini(prompt: string, apiKey: string): Promise<string> {
+  for (const model of FREE_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 1000,
+            responseMimeType: "application/json",
+          },
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const text: string = (data?.candidates?.[0]?.content?.parts ?? [])
+          .map((p: { text?: string }) => p.text ?? "")
+          .join("")
+          .trim();
+        if (text) {
+          console.log(`✅ Gemini model succeeded: ${model}`);
+          return text;
+        }
+      }
+
+      const status = res.status;
+      console.warn(`⚠️ Model ${model} returned ${status}, trying next...`);
+
+      // Don't retry on auth errors
+      if (status === 400 || status === 401 || status === 403) {
+        throw new Error(`Auth error ${status} — check your GEMINI_API_KEY`);
+      }
+
+      // Add a small delay between retries for 429/503
+      if (status === 429 || status === 503) {
+        await new Promise((r) => setTimeout(r, 800));
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Auth error")) throw err;
+      console.warn(`⚠️ Model ${model} threw: ${msg}`);
+    }
+  }
+  throw new Error("All Gemini models unavailable");
+}
+
 function tryParseJSON(raw: string): Record<string, unknown> | null {
-  // Clean markdown fences
   let clean = raw
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/```[\s\S]*$/i, "")
     .trim();
 
-  // Try direct parse first
-  try {
-    return JSON.parse(clean);
-  } catch {}
+  try { return JSON.parse(clean); } catch {}
 
-  // Extract between first { and last }
   const firstBrace = clean.indexOf("{");
   const lastBrace = clean.lastIndexOf("}");
-
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-    try {
-      return JSON.parse(clean.slice(firstBrace, lastBrace + 1));
-    } catch {}
+    try { return JSON.parse(clean.slice(firstBrace, lastBrace + 1)); } catch {}
   }
 
-  // Truncated JSON — find last complete field and close the object
   if (firstBrace !== -1) {
     let partial = clean.slice(firstBrace);
-    // Count open braces/brackets and close them
-    let openBraces = 0;
-    let openBrackets = 0;
+    let openBraces = 0, openBrackets = 0;
     for (const ch of partial) {
       if (ch === "{") openBraces++;
       else if (ch === "}") openBraces--;
       else if (ch === "[") openBrackets++;
       else if (ch === "]") openBrackets--;
     }
-    // Close unclosed brackets and braces
     if (openBrackets > 0) partial += "]".repeat(openBrackets);
     if (openBraces > 0) partial += "}".repeat(openBraces);
-    try {
-      return JSON.parse(partial);
-    } catch {}
-    // Last resort: truncate at last comma and close
+    try { return JSON.parse(partial); } catch {}
+
     const lastComma = partial.lastIndexOf(",");
     if (lastComma !== -1) {
       let trimmed = partial.slice(0, lastComma);
-      openBraces = 0;
-      openBrackets = 0;
+      openBraces = 0; openBrackets = 0;
       for (const ch of trimmed) {
         if (ch === "{") openBraces++;
         else if (ch === "}") openBraces--;
@@ -106,13 +149,17 @@ function tryParseJSON(raw: string): Record<string, unknown> | null {
       }
       if (openBrackets > 0) trimmed += "]".repeat(openBrackets);
       if (openBraces > 0) trimmed += "}".repeat(openBraces);
-      try {
-        return JSON.parse(trimmed);
-      } catch {}
+      try { return JSON.parse(trimmed); } catch {}
     }
   }
-
   return null;
+}
+
+function clamp(val: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(val)));
+}
+function arr(val: unknown): string[] {
+  return Array.isArray(val) ? (val as string[]) : [];
 }
 
 export async function POST(request: NextRequest) {
@@ -144,49 +191,29 @@ export async function POST(request: NextRequest) {
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
+
+    // No API key → use local analyzer directly
     if (!apiKey) {
-      return NextResponse.json({ error: "Service temporarily unavailable." }, { status: 503 });
+      console.log("No GEMINI_API_KEY — using local analyzer");
+      const localResult = analyzeResume(text);
+      return NextResponse.json({ success: true, data: localResult, fallback: true });
     }
 
-    const GEMINI_URL =
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
-
-    const geminiRes = await fetch(GEMINI_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: ANALYSIS_PROMPT(text.slice(0, 5000)) }] }],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 4096,
-          responseMimeType: "application/json",
-        },
-      }),
-    });
-
-    if (!geminiRes.ok) {
-      const errText = await geminiRes.text();
-      console.error("Gemini API error:", geminiRes.status, errText);
-      if (geminiRes.status === 429) {
-        return NextResponse.json({ error: "AI service is busy. Please try again in a moment." }, { status: 503 });
-      }
-      return NextResponse.json({ error: "AI analysis failed. Please try again." }, { status: 500 });
-    }
-
-    const geminiData = await geminiRes.json();
-    const parts = geminiData?.candidates?.[0]?.content?.parts ?? [];
-    const rawContent: string = parts.map((p: { text?: string }) => p.text ?? "").join("").trim();
-
-    if (!rawContent) {
-      console.error("Empty Gemini response:", JSON.stringify(geminiData));
-      return NextResponse.json({ error: "Empty response from AI. Please try again." }, { status: 500 });
+    // Try Gemini (all free models), fall back to local on failure
+    let rawContent: string;
+    try {
+      rawContent = await callGemini(ANALYSIS_PROMPT(text.slice(0, 5000)), apiKey);
+    } catch (err) {
+      console.warn("All Gemini models failed, using local analyzer:", err);
+      const localResult = analyzeResume(text);
+      return NextResponse.json({ success: true, data: localResult, fallback: true });
     }
 
     const result = tryParseJSON(rawContent);
-
     if (!result) {
-      console.error("All JSON parse attempts failed. Raw:", rawContent.slice(0, 300));
-      return NextResponse.json({ error: "Failed to process AI response. Please try again." }, { status: 500 });
+      console.warn("JSON parse failed, using local analyzer. Raw:", rawContent.slice(0, 200));
+      const localResult = analyzeResume(text);
+      return NextResponse.json({ success: true, data: localResult, fallback: true });
     }
 
     const s = (key: string) => (result.sections as Record<string, unknown>)?.[key];
@@ -226,6 +253,7 @@ export async function POST(request: NextRequest) {
       strengths: arr(result.strengths).slice(0, 6),
       weaknesses: arr(result.weaknesses).slice(0, 5),
       suggestions: arr(result.suggestions).slice(0, 6),
+      fallback: false,
     };
 
     return NextResponse.json({ success: true, data: sanitized });
@@ -233,12 +261,4 @@ export async function POST(request: NextRequest) {
     console.error("ANALYZE ERROR:", err);
     return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
   }
-}
-
-function clamp(val: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, Math.round(val)));
-}
-
-function arr(val: unknown): string[] {
-  return Array.isArray(val) ? (val as string[]) : [];
 }

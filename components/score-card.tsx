@@ -1,80 +1,79 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 
 interface ScoreCardProps {
   score: number;
 }
 
-function getScoreColor(score: number) {
-  if (score >= 75) return { stroke: "#34d399", text: "text-[#34d399]", label: "Excellent", bg: "bg-[#34d399]/10" };
-  if (score >= 50) return { stroke: "#fbbf24", text: "text-[#fbbf24]", label: "Good", bg: "bg-[#fbbf24]/10" };
-  return { stroke: "#f87171", text: "text-[#f87171]", label: "Needs Work", bg: "bg-[#f87171]/10" };
+function getScoreLabel(score: number): { label: string; color: string; ring: string } {
+  if (score >= 80) return { label: "Excellent", color: "#34d399", ring: "#34d399" };
+  if (score >= 65) return { label: "Good", color: "#60a5fa", ring: "#60a5fa" };
+  if (score >= 45) return { label: "Fair", color: "#fbbf24", ring: "#fbbf24" };
+  return { label: "Needs Work", color: "#f87171", ring: "#f87171" };
 }
 
 export function ScoreCard({ score }: ScoreCardProps) {
-  const [displayed, setDisplayed] = useState(0);
-  const requestRef = useRef<number | undefined>(undefined);
-  const color = getScoreColor(score);
-
-  const radius = 70;
+  const { label, color, ring } = getScoreLabel(score);
+  const radius = 54;
   const circumference = 2 * Math.PI * radius;
-  const progress = (displayed / 100) * circumference;
-  const dashOffset = circumference - progress;
-
-  useEffect(() => {
-    let start: number | null = null;
-    const duration = 1400;
-
-    const animate = (timestamp: number) => {
-      if (!start) start = timestamp;
-      const elapsed = timestamp - start;
-      const pct = Math.min(elapsed / duration, 1);
-      const eased = 1 - Math.pow(1 - pct, 3);
-      setDisplayed(Math.round(eased * score));
-      if (pct < 1) requestRef.current = requestAnimationFrame(animate);
-    };
-
-    requestRef.current = requestAnimationFrame(animate);
-    return () => { if (requestRef.current) cancelAnimationFrame(requestRef.current); };
-  }, [score]);
+  const offset = circumference - (score / 100) * circumference;
 
   return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.85 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.6, type: "spring" }}
-      className="flex flex-col items-center gap-4"
-    >
-      <div className="relative">
-        <svg width="180" height="180" className="-rotate-90">
+    <div className="flex flex-col items-center gap-3">
+      <div className="relative w-40 h-40">
+        {/* Background ring */}
+        <svg className="w-full h-full -rotate-90" viewBox="0 0 128 128">
           <circle
-            cx="90" cy="90" r={radius}
+            cx="64" cy="64" r={radius}
             fill="none"
-            stroke="rgba(255,255,255,0.08)"
+            stroke="rgba(255,255,255,0.06)"
             strokeWidth="10"
           />
-          <circle
-            cx="90" cy="90" r={radius}
+          {/* Animated score ring */}
+          <motion.circle
+            cx="64" cy="64" r={radius}
             fill="none"
-            stroke={color.stroke}
+            stroke={ring}
             strokeWidth="10"
             strokeLinecap="round"
             strokeDasharray={circumference}
-            strokeDashoffset={dashOffset}
-            style={{ transition: "stroke-dashoffset 0.05s linear", filter: `drop-shadow(0 0 8px ${color.stroke}60)` }}
+            initial={{ strokeDashoffset: circumference }}
+            animate={{ strokeDashoffset: offset }}
+            transition={{ duration: 1.4, ease: [0.22, 1, 0.36, 1], delay: 0.2 }}
+            style={{ filter: `drop-shadow(0 0 8px ${ring}60)` }}
           />
         </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center rotate-0">
-          <span className={`text-4xl font-black ${color.text}`}>{displayed}</span>
-          <span className="text-white/40 text-xs font-medium tracking-widest uppercase">/ 100</span>
+
+        {/* Score number */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <motion.span
+            initial={{ opacity: 0, scale: 0.6 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.4, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+            className="text-4xl font-black text-white leading-none"
+          >
+            {score}
+          </motion.span>
+          <span className="text-white/30 text-xs font-medium mt-0.5">/100</span>
         </div>
       </div>
 
-      <div className={`px-5 py-2 rounded-full ${color.bg} border border-white/10`}>
-        <span className={`font-semibold text-sm ${color.text}`}>{color.label}</span>
-      </div>
-    </motion.div>
+      {/* Label */}
+      <motion.div
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.6 }}
+        className="flex flex-col items-center gap-1"
+      >
+        <span
+          className="text-sm font-bold tracking-wide"
+          style={{ color }}
+        >
+          {label}
+        </span>
+        <span className="text-white/25 text-xs">Overall Resume Score</span>
+      </motion.div>
+    </div>
   );
 }

@@ -2,29 +2,54 @@
 
 import { motion } from "framer-motion";
 
-function Shimmer({ className }: { className: string }) {
+function Pulse({ className }: { className: string }) {
   return (
-    <div className={`relative overflow-hidden rounded-xl bg-white/5 ${className}`}>
-      <motion.div
-        className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent"
-        animate={{ x: ["-100%", "100%"] }}
-        transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
-      />
-    </div>
+    <motion.div
+      animate={{ opacity: [0.3, 0.6, 0.3] }}
+      transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+      className={`rounded-lg bg-white/8 ${className}`}
+    />
   );
 }
 
 export function LoadingSkeleton() {
   return (
-    <div className="w-full max-w-2xl mx-auto space-y-6 pt-8">
-      <div className="flex flex-col items-center gap-4">
-        <Shimmer className="w-44 h-44 rounded-full" />
-        <Shimmer className="w-28 h-8 rounded-full" />
+    <div className="w-full max-w-2xl mx-auto px-4 py-12 space-y-6">
+      {/* Back button */}
+      <Pulse className="h-4 w-36" />
+
+      {/* Title */}
+      <div className="text-center space-y-3 py-4">
+        <Pulse className="h-8 w-56 mx-auto" />
+        <Pulse className="h-3 w-72 mx-auto" />
       </div>
-      <Shimmer className="h-20 w-full rounded-2xl" />
-      <Shimmer className="h-40 w-full rounded-2xl" />
-      <Shimmer className="h-32 w-full rounded-2xl" />
-      <Shimmer className="h-36 w-full rounded-2xl" />
+
+      {/* Score circle */}
+      <div className="flex justify-center py-4">
+        <Pulse className="w-40 h-40 rounded-full" />
+      </div>
+
+      {/* Metric cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[...Array(4)].map((_, i) => (
+          <Pulse key={i} className="h-24" />
+        ))}
+      </div>
+
+      {/* ATS + Readability */}
+      <div className="grid sm:grid-cols-2 gap-3">
+        <Pulse className="h-28" />
+        <Pulse className="h-28" />
+      </div>
+
+      {/* Strengths */}
+      <Pulse className="h-48" />
+
+      {/* Weaknesses */}
+      <Pulse className="h-40" />
+
+      {/* Suggestions */}
+      <Pulse className="h-52" />
     </div>
   );
 }
