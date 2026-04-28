@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey;
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=" + apiKey;
 
     const geminiRes = await fetch(GEMINI_URL, {
       method: "POST",
