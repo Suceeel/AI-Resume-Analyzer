@@ -4,10 +4,9 @@ import { extractText } from "unpdf";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// ─── Rate limiting (in-memory) ───────────────────────────────────────────────
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT = 10;           // 10 requests…
-const RATE_WINDOW_MS = 60 * 60 * 1000; // …per hour
+const RATE_LIMIT = 10;
+const RATE_WINDOW_MS = 60 * 60 * 1000;
 
 function checkRateLimit(request: NextRequest): { allowed: boolean; resetMins: number } {
   const forwarded = request.headers.get("x-forwarded-for");
@@ -26,7 +25,6 @@ function checkRateLimit(request: NextRequest): { allowed: boolean; resetMins: nu
   return { allowed: true, resetMins: 0 };
 }
 
-// ─── Prompt ──────────────────────────────────────────────────────────────────
 const ANALYSIS_PROMPT = (resumeText: string) => `You are an expert resume reviewer and career coach with 15+ years of experience in technical recruiting at top companies like Google, Meta, and Amazon.
 
 Analyze this resume carefully and return a JSON object. Be specific — base EVERYTHING on the ACTUAL content. No generic advice. Reference real content from the resume.
@@ -41,7 +39,7 @@ Return ONLY valid JSON with no markdown, no extra text, no explanation. Just the
   "score": <number 0-100, overall resume quality score>,
   "atsScore": <number 0-100, how well it will pass ATS systems>,
   "readabilityScore": <number 0-100, clarity and conciseness>,
-  "industry": <string, detected industry e.g. "Software Engineering", "Data Science / ML", "DevOps / Cloud", "Product Management", "UX / Design", "Cybersecurity", "Finance", "Healthcare", "Marketing", "General">,
+  "industry": "<string, detected industry e.g. Software Engineering, Data Science / ML, DevOps / Cloud, Product Management, UX / Design, Cybersecurity, Finance, Healthcare, Marketing, General>",
   "wordCount": <number, actual word count>,
   "sections": {
     "education": <boolean>,
@@ -58,30 +56,22 @@ Return ONLY valid JSON with no markdown, no extra text, no explanation. Just the
     "website": <boolean>
   },
   "metrics": {
-    "actionVerbCount": <number, count of strong action verbs like built, led, designed, optimized>,
-    "quantifiedAchievements": <number, count of bullet points with real numbers or percentages>,
-    "bulletPoints": <number, total bullet points>,
+    "actionVerbCount": <number>,
+    "quantifiedAchievements": <number>,
+    "bulletPoints": <number>,
     "pageEstimate": <number, 1 or 2>
   },
-  "keywords": [<strings: actual technical or domain keywords found — be thorough>],
-  "missingKeywords": [<strings: 4-6 important keywords missing and relevant to this person's field>],
-  "duplicateWords": [<strings: words used too many times — max 6, only real duplicates>],
-  "weakBullets": [<strings: copy up to 3 actual weak or vague bullet points verbatim from the resume>],
-  "strengths": [<strings: 4-6 specific strengths referencing actual content from this resume>],
-  "weaknesses": [<strings: 3-5 specific weaknesses found in this actual resume>],
-  "suggestions": [<strings: 5-6 specific actionable suggestions written for THIS person — not generic tips>]
-}
+  "keywords": ["string"],
+  "missingKeywords": ["string"],
+  "duplicateWords": ["string"],
+  "weakBullets": ["string"],
+  "strengths": ["string"],
+  "weaknesses": ["string"],
+  "suggestions": ["string"]
+}`;
 
-Scoring rules:
-- score: sections 35% + keywords 20% + action verbs & quantification 25% + contact info 10% + length 10%
-- atsScore: penalise missing sections heavily, reward keyword density and clean structure
-- readabilityScore: penalise walls of text, passive voice, missing bullets; reward concise bullets and clear sections
-- Be honest — do NOT inflate scores`;
-
-// ─── Handler ─────────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest) {
   try {
-    // 1. Rate limit
     const { allowed, resetMins } = checkRateLimit(request);
     if (!allowed) {
       return NextResponse.json(
@@ -90,7 +80,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Validate file
     const formData = await request.formData();
     const file = formData.get("resume") as File | null;
 
@@ -104,7 +93,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "File size must be under 5 MB." }, { status: 400 });
     }
 
-    // 3. Extract text from PDF
     const buffer = new Uint8Array(await file.arrayBuffer());
     const { text: pages } = await extractText(buffer, { mergePages: true });
     const text = Array.isArray(pages) ? pages.join(" ") : pages;
@@ -116,7 +104,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 4. Check API key
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       console.error("GEMINI_API_KEY is not set.");
@@ -126,26 +113,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 5. Call Gemini API (gemini-1.5-flash — free tier)
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: ANALYSIS_PROMPT(text.slice(0, 6000)) }],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 2048,
-            responseMimeType: "application/json", // force JSON output
+    const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + apiKey;
+
+    const geminiRes = await fetch(GEMINI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: ANALYSIS_PROMPT(text.slice(0, 6000)) }],
           },
-        }),
-      }
-    );
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 2048,
+          responseMimeType: "application/json",
+        },
+      }),
+    });
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text();
@@ -163,7 +148,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 6. Extract content
     const geminiData = await geminiRes.json();
     const rawContent: string = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
@@ -175,7 +159,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 7. Parse JSON (strip markdown fences just in case)
     let result: Record<string, unknown>;
     try {
       const clean = rawContent
@@ -192,13 +175,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 8. Sanitise — so the UI never crashes on missing fields
     const sanitized = {
-      score:             clamp(result.score as number ?? 0, 0, 100),
-      atsScore:          clamp(result.atsScore as number ?? 0, 0, 100),
-      readabilityScore:  clamp(result.readabilityScore as number ?? 0, 0, 100),
-      industry:          typeof result.industry === "string" ? result.industry : "General",
-      wordCount:         Number(result.wordCount) || text.trim().split(/\s+/).length,
+      score:            clamp((result.score as number) ?? 0, 0, 100),
+      atsScore:         clamp((result.atsScore as number) ?? 0, 0, 100),
+      readabilityScore: clamp((result.readabilityScore as number) ?? 0, 0, 100),
+      industry:         typeof result.industry === "string" ? result.industry : "General",
+      wordCount:        Number(result.wordCount) || text.trim().split(/\s+/).length,
       sections: {
         education:  Boolean((result.sections as Record<string, unknown>)?.education),
         experience: Boolean((result.sections as Record<string, unknown>)?.experience),
@@ -238,7 +220,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 function clamp(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(val)));
 }
