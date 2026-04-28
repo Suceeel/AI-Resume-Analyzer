@@ -13,7 +13,6 @@ function checkRateLimit(request: NextRequest): { allowed: boolean; resetMins: nu
   const ip = forwarded ? forwarded.split(",")[0].trim() : "unknown";
   const now = Date.now();
   const entry = rateLimitMap.get(ip);
-
   if (!entry || now > entry.resetAt) {
     rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
     return { allowed: true, resetMins: 0 };
@@ -26,51 +25,95 @@ function checkRateLimit(request: NextRequest): { allowed: boolean; resetMins: nu
 }
 
 const ANALYSIS_PROMPT = (resumeText: string) =>
-  `You are an expert resume reviewer and career coach with 15+ years of experience in technical recruiting at top companies like Google, Meta, and Amazon.
-
-Analyze this resume carefully and return a JSON object. Be specific — base EVERYTHING on the ACTUAL content. No generic advice. Reference real content from the resume.
+  `You are an expert resume reviewer. Analyze the resume below and return ONLY a JSON object. No markdown. No code fences. No explanation. Start with { and end with }.
 
 Resume:
 """
 ${resumeText}
 """
 
-Return ONLY a raw JSON object. No markdown. No code fences. No explanation. No text before or after. Start your response with { and end with }.
-
+JSON structure to return:
 {
-  "score": <number 0-100>,
-  "atsScore": <number 0-100>,
-  "readabilityScore": <number 0-100>,
+  "score": <0-100>,
+  "atsScore": <0-100>,
+  "readabilityScore": <0-100>,
   "industry": "<string>",
   "wordCount": <number>,
-  "sections": {
-    "education": <boolean>,
-    "experience": <boolean>,
-    "skills": <boolean>,
-    "projects": <boolean>,
-    "summary": <boolean>
-  },
-  "contactInfo": {
-    "email": <boolean>,
-    "phone": <boolean>,
-    "linkedin": <boolean>,
-    "github": <boolean>,
-    "website": <boolean>
-  },
-  "metrics": {
-    "actionVerbCount": <number>,
-    "quantifiedAchievements": <number>,
-    "bulletPoints": <number>,
-    "pageEstimate": <number>
-  },
-  "keywords": ["string"],
-  "missingKeywords": ["string"],
-  "duplicateWords": ["string"],
-  "weakBullets": ["string"],
-  "strengths": ["string"],
-  "weaknesses": ["string"],
-  "suggestions": ["string"]
+  "sections": { "education": <bool>, "experience": <bool>, "skills": <bool>, "projects": <bool>, "summary": <bool> },
+  "contactInfo": { "email": <bool>, "phone": <bool>, "linkedin": <bool>, "github": <bool>, "website": <bool> },
+  "metrics": { "actionVerbCount": <number>, "quantifiedAchievements": <number>, "bulletPoints": <number>, "pageEstimate": <1 or 2> },
+  "keywords": [<max 10 strings>],
+  "missingKeywords": [<max 5 strings>],
+  "duplicateWords": [<max 5 strings>],
+  "weakBullets": [<max 3 strings>],
+  "strengths": [<exactly 4 strings>],
+  "weaknesses": [<exactly 4 strings>],
+  "suggestions": [<exactly 4 strings>]
 }`;
+
+function tryParseJSON(raw: string): Record<string, unknown> | null {
+  // Clean markdown fences
+  let clean = raw
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```[\s\S]*$/i, "")
+    .trim();
+
+  // Try direct parse first
+  try {
+    return JSON.parse(clean);
+  } catch {}
+
+  // Extract between first { and last }
+  const firstBrace = clean.indexOf("{");
+  const lastBrace = clean.lastIndexOf("}");
+
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    try {
+      return JSON.parse(clean.slice(firstBrace, lastBrace + 1));
+    } catch {}
+  }
+
+  // Truncated JSON — find last complete field and close the object
+  if (firstBrace !== -1) {
+    let partial = clean.slice(firstBrace);
+    // Count open braces/brackets and close them
+    let openBraces = 0;
+    let openBrackets = 0;
+    for (const ch of partial) {
+      if (ch === "{") openBraces++;
+      else if (ch === "}") openBraces--;
+      else if (ch === "[") openBrackets++;
+      else if (ch === "]") openBrackets--;
+    }
+    // Close unclosed brackets and braces
+    if (openBrackets > 0) partial += "]".repeat(openBrackets);
+    if (openBraces > 0) partial += "}".repeat(openBraces);
+    try {
+      return JSON.parse(partial);
+    } catch {}
+    // Last resort: truncate at last comma and close
+    const lastComma = partial.lastIndexOf(",");
+    if (lastComma !== -1) {
+      let trimmed = partial.slice(0, lastComma);
+      openBraces = 0;
+      openBrackets = 0;
+      for (const ch of trimmed) {
+        if (ch === "{") openBraces++;
+        else if (ch === "}") openBraces--;
+        else if (ch === "[") openBrackets++;
+        else if (ch === "]") openBrackets--;
+      }
+      if (openBrackets > 0) trimmed += "]".repeat(openBrackets);
+      if (openBraces > 0) trimmed += "}".repeat(openBraces);
+      try {
+        return JSON.parse(trimmed);
+      } catch {}
+    }
+  }
+
+  return null;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -85,15 +128,9 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
     const file = formData.get("resume") as File | null;
 
-    if (!file) {
-      return NextResponse.json({ error: "No file provided." }, { status: 400 });
-    }
-    if (file.type !== "application/pdf") {
-      return NextResponse.json({ error: "Only PDF files are accepted." }, { status: 400 });
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      return NextResponse.json({ error: "File size must be under 5 MB." }, { status: 400 });
-    }
+    if (!file) return NextResponse.json({ error: "No file provided." }, { status: 400 });
+    if (file.type !== "application/pdf") return NextResponse.json({ error: "Only PDF files are accepted." }, { status: 400 });
+    if (file.size > 5 * 1024 * 1024) return NextResponse.json({ error: "File size must be under 5 MB." }, { status: 400 });
 
     const buffer = new Uint8Array(await file.arrayBuffer());
     const { text: pages } = await extractText(buffer, { mergePages: true });
@@ -108,11 +145,7 @@ export async function POST(request: NextRequest) {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      console.error("GEMINI_API_KEY is not set.");
-      return NextResponse.json(
-        { error: "Service temporarily unavailable. Please try again later." },
-        { status: 503 }
-      );
+      return NextResponse.json({ error: "Service temporarily unavailable." }, { status: 503 });
     }
 
     const GEMINI_URL =
@@ -122,10 +155,10 @@ export async function POST(request: NextRequest) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: ANALYSIS_PROMPT(text.slice(0, 6000)) }] }],
+        contents: [{ parts: [{ text: ANALYSIS_PROMPT(text.slice(0, 5000)) }] }],
         generationConfig: {
           temperature: 0.1,
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096,
           responseMimeType: "application/json",
         },
       }),
@@ -135,77 +168,56 @@ export async function POST(request: NextRequest) {
       const errText = await geminiRes.text();
       console.error("Gemini API error:", geminiRes.status, errText);
       if (geminiRes.status === 429) {
-        return NextResponse.json(
-          { error: "The AI service is busy right now. Please wait a moment and try again." },
-          { status: 503 }
-        );
+        return NextResponse.json({ error: "AI service is busy. Please try again in a moment." }, { status: 503 });
       }
       return NextResponse.json({ error: "AI analysis failed. Please try again." }, { status: 500 });
     }
 
     const geminiData = await geminiRes.json();
     const parts = geminiData?.candidates?.[0]?.content?.parts ?? [];
-    const rawContent: string = parts
-      .map((p: { text?: string }) => p.text ?? "")
-      .join("")
-      .trim();
+    const rawContent: string = parts.map((p: { text?: string }) => p.text ?? "").join("").trim();
 
     if (!rawContent) {
       console.error("Empty Gemini response:", JSON.stringify(geminiData));
       return NextResponse.json({ error: "Empty response from AI. Please try again." }, { status: 500 });
     }
 
-    let result: Record<string, unknown>;
-    try {
-      // Strip any markdown fences Gemini might add despite instructions
-      let clean = rawContent
-        .replace(/^```json\s*/i, "")
-        .replace(/^```\s*/i, "")
-        .replace(/```[\s\S]*$/i, "")
-        .trim();
+    const result = tryParseJSON(rawContent);
 
-      // Extract only the JSON object between outermost braces
-      const firstBrace = clean.indexOf("{");
-      const lastBrace = clean.lastIndexOf("}");
-      if (firstBrace === -1 || lastBrace === -1) {
-        throw new Error("No JSON object found in response");
-      }
-      clean = clean.slice(firstBrace, lastBrace + 1);
-      result = JSON.parse(clean);
-    } catch (parseErr) {
-      console.error("JSON parse failed. Raw:", rawContent.slice(0, 500));
-      console.error("Parse error:", parseErr);
-      return NextResponse.json(
-        { error: "Failed to process AI response. Please try again." },
-        { status: 500 }
-      );
+    if (!result) {
+      console.error("All JSON parse attempts failed. Raw:", rawContent.slice(0, 300));
+      return NextResponse.json({ error: "Failed to process AI response. Please try again." }, { status: 500 });
     }
 
+    const s = (key: string) => (result.sections as Record<string, unknown>)?.[key];
+    const c = (key: string) => (result.contactInfo as Record<string, unknown>)?.[key];
+    const m = (key: string) => (result.metrics as Record<string, unknown>)?.[key];
+
     const sanitized = {
-      score: clamp((result.score as number) ?? 0, 0, 100),
-      atsScore: clamp((result.atsScore as number) ?? 0, 0, 100),
-      readabilityScore: clamp((result.readabilityScore as number) ?? 0, 0, 100),
+      score: clamp((result.score as number) ?? 50, 0, 100),
+      atsScore: clamp((result.atsScore as number) ?? 50, 0, 100),
+      readabilityScore: clamp((result.readabilityScore as number) ?? 50, 0, 100),
       industry: typeof result.industry === "string" ? result.industry : "General",
       wordCount: Number(result.wordCount) || text.trim().split(/\s+/).length,
       sections: {
-        education: Boolean((result.sections as Record<string, unknown>)?.education),
-        experience: Boolean((result.sections as Record<string, unknown>)?.experience),
-        skills: Boolean((result.sections as Record<string, unknown>)?.skills),
-        projects: Boolean((result.sections as Record<string, unknown>)?.projects),
-        summary: Boolean((result.sections as Record<string, unknown>)?.summary),
+        education: Boolean(s("education")),
+        experience: Boolean(s("experience")),
+        skills: Boolean(s("skills")),
+        projects: Boolean(s("projects")),
+        summary: Boolean(s("summary")),
       },
       contactInfo: {
-        email: Boolean((result.contactInfo as Record<string, unknown>)?.email),
-        phone: Boolean((result.contactInfo as Record<string, unknown>)?.phone),
-        linkedin: Boolean((result.contactInfo as Record<string, unknown>)?.linkedin),
-        github: Boolean((result.contactInfo as Record<string, unknown>)?.github),
-        website: Boolean((result.contactInfo as Record<string, unknown>)?.website),
+        email: Boolean(c("email")),
+        phone: Boolean(c("phone")),
+        linkedin: Boolean(c("linkedin")),
+        github: Boolean(c("github")),
+        website: Boolean(c("website")),
       },
       metrics: {
-        actionVerbCount: Number((result.metrics as Record<string, unknown>)?.actionVerbCount ?? 0),
-        quantifiedAchievements: Number((result.metrics as Record<string, unknown>)?.quantifiedAchievements ?? 0),
-        bulletPoints: Number((result.metrics as Record<string, unknown>)?.bulletPoints ?? 0),
-        pageEstimate: Number((result.metrics as Record<string, unknown>)?.pageEstimate ?? 1),
+        actionVerbCount: Number(m("actionVerbCount") ?? 0),
+        quantifiedAchievements: Number(m("quantifiedAchievements") ?? 0),
+        bulletPoints: Number(m("bulletPoints") ?? 0),
+        pageEstimate: Number(m("pageEstimate") ?? 1),
       },
       keywords: arr(result.keywords).slice(0, 20),
       missingKeywords: arr(result.missingKeywords).slice(0, 6),
